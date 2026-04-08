@@ -463,13 +463,13 @@ class YouTubeShortsDownloader:
         stem = re.sub(r"\.f\d+$", "", stem)
         return stem.strip().lower()
 
-    def _build_shorts_batch_file(self, output_dir, video_ids):
+    def _build_shorts_batch_file(self, output_dir, video_ids, prefix="yt_shorts_urls_"):
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
             delete=False,
             dir=output_dir,
-            prefix="yt_shorts_urls_",
+            prefix=prefix,
             suffix=".txt",
         ) as tmp:
             for vid in video_ids:
@@ -767,19 +767,21 @@ class YouTubeShortsDownloader:
                         self._log("Merging audio+video...", None)
 
                     elif "ERROR" in line or "Got error:" in line:
-                        self._log(f"Warning: {line}", "error")
                         lower_line = line.lower()
                         if "rate-limited by youtube" in lower_line or "this content isn't available, try again later" in lower_line:
                             rate_limit_hits += 1
                             vid_match = re.search(r"\[youtube\]\s+([A-Za-z0-9_-]{6,})", line)
                             if vid_match:
-                                rate_limited_video_ids.add(vid_match.group(1))
+                                vid = vid_match.group(1)
+                                if vid not in rate_limited_video_ids:
+                                    self._log(f"Warning: Rate-limit on video {vid}. Retry queue me add kiya.", "error")
+                                rate_limited_video_ids.add(vid)
                             if rate_limit_hits in (1, 3):
                                 self._log(
                                     "Warning: YouTube rate-limit detect hua. Downloader slow mode pe continue kar raha hai.",
                                     "error",
                                 )
-                            if rate_limit_hits >= 5:
+                            if rate_limit_hits >= 8:
                                 self._log(
                                     "ERROR: Rate-limit errors bahut zyada hain. Current attempt stop kar rahe hain to avoid more blocking.",
                                     "error",
@@ -789,6 +791,8 @@ class YouTubeShortsDownloader:
                                 except Exception:
                                     pass
                                 break
+                        else:
+                            self._log(f"Warning: {line}", "error")
 
                 return self.process.wait()
 
@@ -848,6 +852,65 @@ class YouTubeShortsDownloader:
                 if rate_limited_video_ids:
                     sample_ids = ", ".join(sorted(list(rate_limited_video_ids))[:6])
                     self._log(f"Warning: Affected video IDs (sample): {sample_ids}", "error")
+
+            if self.is_downloading and rate_limited_video_ids:
+                pending_ids = sorted(rate_limited_video_ids)
+                retry_batch_path = None
+                try:
+                    retry_batch_path = self._build_shorts_batch_file(output_dir, pending_ids, prefix="yt_retry_urls_")
+                    retry_cmd = [
+                        *yt_dlp_cmd,
+                        "--ignore-config",
+                        "--batch-file",
+                        retry_batch_path,
+                        "--extractor-args",
+                        "youtube:player_client=android",
+                        "-f",
+                        "18/best[acodec!=none][vcodec!=none]/best",
+                        "-o",
+                        os.path.join(output_dir, "%(title)s.%(ext)s"),
+                        "--no-overwrites",
+                        "--newline",
+                        "--no-warnings",
+                        "--ignore-errors",
+                        *anti_rate_limit_flags,
+                    ]
+                    if ffmpeg_path:
+                        retry_cmd.extend(["--ffmpeg-location", ffmpeg_path, "--merge-output-format", "mp4"])
+
+                    self._log(f"Info: Rate-limit recovery pass start ({len(pending_ids)} IDs)", "info")
+                    retry_code = run_download_attempt(retry_cmd, "Rate-limit recovery", seen_video_keys)
+                    if retry_code == 0:
+                        self._log("Success: Rate-limit recovery pass complete.", "success")
+                    else:
+                        self._log(f"Warning: Recovery pass exited with code {retry_code}", "error")
+
+                    archived_ids = set()
+                    if os.path.exists(archive_path):
+                        try:
+                            with open(archive_path, "r", encoding="utf-8", errors="ignore") as f:
+                                for row in f:
+                                    m = re.search(r"youtube\s+([A-Za-z0-9_-]{6,})", row)
+                                    if m:
+                                        archived_ids.add(m.group(1))
+                        except Exception:
+                            pass
+
+                    unresolved_ids = [vid for vid in pending_ids if vid not in archived_ids]
+                    if unresolved_ids:
+                        sample_unresolved = ", ".join(unresolved_ids[:6])
+                        self._log(f"Warning: Kuch IDs abhi bhi blocked hain: {sample_unresolved}", "error")
+                    else:
+                        rate_limited_video_ids.clear()
+                        rate_limit_hits = 0
+                        if return_code != 0:
+                            return_code = 0
+                finally:
+                    if retry_batch_path and os.path.exists(retry_batch_path):
+                        try:
+                            os.remove(retry_batch_path)
+                        except Exception:
+                            pass
 
             if ffmpeg_path:
                 post_merged = self._merge_split_stream_files(output_dir, ffmpeg_path)
