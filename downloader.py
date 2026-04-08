@@ -433,26 +433,16 @@ class YouTubeShortsDownloader:
 
         return None
 
-    def _get_quality_format(self, allow_separate_streams=True):
+    def _get_quality_format(self):
         q = self.quality_var.get()
-
-        if allow_separate_streams:
-            quality_map = {
-                "1080p": "bestvideo[height<=1080][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=1080][vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]",
-                "720p": "bestvideo[height<=720][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=720][vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]",
-                "480p": "bestvideo[height<=480][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=480][vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]",
-                "360p": "bestvideo[height<=360][vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=360][vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]",
-                "Best Available": "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[vcodec^=avc1][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]",
-            }
-        else:
-            # FFmpeg missing: force single-file streams so the final file is playable.
-            quality_map = {
-                "1080p": "best[height<=1080][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=1080][vcodec!=none][acodec!=none][ext=mp4]/best[height<=1080][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
-                "720p": "best[height<=720][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=720][vcodec!=none][acodec!=none][ext=mp4]/best[height<=720][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
-                "480p": "best[height<=480][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=480][vcodec!=none][acodec!=none][ext=mp4]/best[height<=480][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
-                "360p": "best[height<=360][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=360][vcodec!=none][acodec!=none][ext=mp4]/best[height<=360][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
-                "Best Available": "best[vcodec^=avc1][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]",
-            }
+        # Always prefer progressive formats that already contain audio+video in one file.
+        quality_map = {
+            "1080p": "best[height<=1080][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=1080][vcodec!=none][acodec!=none][ext=mp4]/best[height<=1080][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
+            "720p": "best[height<=720][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=720][vcodec!=none][acodec!=none][ext=mp4]/best[height<=720][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
+            "480p": "best[height<=480][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=480][vcodec!=none][acodec!=none][ext=mp4]/best[height<=480][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
+            "360p": "best[height<=360][vcodec^=avc1][acodec!=none][ext=mp4]/best[height<=360][vcodec!=none][acodec!=none][ext=mp4]/best[height<=360][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]",
+            "Best Available": "best[vcodec^=avc1][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none][ext=mp4]/best[vcodec!=none][acodec!=none]",
+        }
 
         return quality_map.get(q, quality_map["1080p"])
 
@@ -635,15 +625,15 @@ class YouTubeShortsDownloader:
                 self._log("Info: Android TV user-agent mode enabled for better playback compatibility.", "info")
             self._log("-" * 60)
 
-            # Step 2: Download all videos
-            allow_separate_streams = ffmpeg_path is not None
-            fmt = self._get_quality_format(allow_separate_streams=allow_separate_streams)
+            # Step 2: Download all videos (direct audio+video progressive files)
+            fmt = self._get_quality_format()
             archive_path = os.path.join(output_dir, ".yt_download_archive.txt")
 
             if ffmpeg_path:
                 self._log(f"Info: ffmpeg found -> {ffmpeg_path}", "info")
             else:
                 self._log("Info: ffmpeg nahi mila, single-file fallback mode use ho raha hai.", "info")
+            self._log("Info: Direct audio+video single-file mode enabled (no merge step).", "info")
 
             anti_rate_limit_flags = [
                 "--download-archive",
@@ -694,9 +684,6 @@ class YouTubeShortsDownloader:
                     "--ignore-errors",
                     *anti_rate_limit_flags,
                 ]
-
-                if ffmpeg_path:
-                    batch_download_cmd.extend(["--ffmpeg-location", ffmpeg_path, "--merge-output-format", "mp4"])
 
             self._log("Info: Download shuru ho raha hai...", "info")
             self._log("-" * 60)
@@ -764,7 +751,8 @@ class YouTubeShortsDownloader:
                             )
 
                     elif "[Merger]" in line or "[ExtractAudio]" in line or "Merging" in line:
-                        self._log("Merging audio+video...", None)
+                        # In direct progressive mode, merger lines are ignored in UI log.
+                        pass
 
                     elif "ERROR" in line or "Got error:" in line:
                         lower_line = line.lower()
@@ -812,9 +800,6 @@ class YouTubeShortsDownloader:
                 *anti_rate_limit_flags,
                 url,
             ]
-            if ffmpeg_path:
-                playlist_fallback_cmd.extend(["--ffmpeg-location", ffmpeg_path, "--merge-output-format", "mp4"])
-
             attempts = []
             if batch_download_cmd:
                 fallback_cmd = list(batch_download_cmd)
@@ -875,9 +860,6 @@ class YouTubeShortsDownloader:
                         "--ignore-errors",
                         *anti_rate_limit_flags,
                     ]
-                    if ffmpeg_path:
-                        retry_cmd.extend(["--ffmpeg-location", ffmpeg_path, "--merge-output-format", "mp4"])
-
                     self._log(f"Info: Rate-limit recovery pass start ({len(pending_ids)} IDs)", "info")
                     retry_code = run_download_attempt(retry_cmd, "Rate-limit recovery", seen_video_keys)
                     if retry_code == 0:
